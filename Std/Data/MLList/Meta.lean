@@ -29,17 +29,6 @@ This is currently used to implement parallelization for the `hint` tactic.
 We recommend using this elsewhere only with caution,
 and particular caution combining it with other code that manipulates tasks!
 
-Calling `IO.cancel` on `t.map f` does not cancel `t`,
-so we have to be careful throughout this file
-to construct cancellation hooks connected to the underlying task,
-rather than the various maps of it that we construct to pass state.
-
-In several places below we use `prio := .max` to set the priority of tasks higher.
-This is only used on `map` tasks which run after the main workload has finished.
-This helps avoid the situation where the main workload has finished,
-but the value is not returned to the consumer because
-other long-running tasks are scheduled before the `map`.
-
 Thomas Murrills has a suggestion to significantly refactor this code,
 reducing duplication using `MonadControl`, but it will require a core change.
 See https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/.60StateRefT'.60.20.60MonadControl.60.20instance.3F
@@ -65,9 +54,9 @@ Recommended usage is to take a prefix of the list
 (e.g. with `MLList.takeUpToFirst` followed by `MLList.force`, or `MLList.takeAsList`)
 and then call the cancellation hook to request cancellation of later unwanted tasks.
 -/
-def runGreedily (tasks : List (IO α)) : IO (BaseIO Unit × MLList IO α) := do
-  let t ← show BaseIO _ from (tasks.map IO.asTask).traverse id
-  return (t.forM cancel, MLList.ofTaskList t |>.liftM |>.mapM fun
+def runGreedily (tasks : List (IO α)) : BaseIO (BaseIO Unit × MLList IO α) := do
+  let t ← tasks.mapM IO.asTask
+  return (t.forM cancel, MLList.ofTaskListM t fun
   | .ok a => pure a
   | .error e => throw (IO.userError s!"{e}"))
 
@@ -79,7 +68,17 @@ def runGreedily' (tasks : List (IO α)) : MLList IO α :=
 
 end IO
 
-namespace Lean.Core.CoreM
+namespace Lean
+
+/--
+Given a backtrackable monad with exception.  This restores the state and extracts
+a value from a paused computation.  It throws the exception if present.
+-/
+def resumeSavedState [Functor m] [MonadBacktrack s m] [MonadExcept ε m] : Except ε (α × s) → m α
+| .ok (a, s) => Functor.mapConst a (restoreState s)
+| .error e => throw e
+
+namespace Core.CoreM
 
 /--
 Given a monadic value in `CoreM`, creates a task that runs it in the current state,
@@ -87,17 +86,15 @@ returning
 * a cancellation hook and
 * a monadic value with the cached result (and subsequent state as it was after running).
 -/
-def asTask (t : CoreM α) : CoreM (BaseIO Unit × Task (CoreM α)) := do
-  let task ← (t.toIO (← read) (← get)).asTask
-  return (IO.cancel task, task.map (prio := .max) fun
-  | .ok (a, s) => do set s; pure a
-  | .error e => throwError m!"Task failed:\n{e}")
+def asEIO (t : CoreM α) : CoreM (EIO Exception α) := do
+  pure <| (t.run' (← read) (← get))
 
 /--
 Given a monadic value in `CoreM`, creates a task that runs it in the current state,
-returning a monadic value with the cached result (and subsequent state as it was after running).
+returning a value with the result.
 -/
-def asTask' (t : CoreM α) : CoreM (Task (CoreM α)) := (·.2) <$> asTask t
+def asTask (t : CoreM α) : CoreM (Task (Except Exception (α × Core.State))) := do
+  (← (Prod.mk <$> t <*> get).asEIO).asTask
 
 /--
 Given a list of monadic values in `CoreM`, runs them all as tasks,
@@ -108,8 +105,10 @@ and returns
 See the doc-string for `IO.runGreedily` for details about the cancellation hook behaviour.
 -/
 def runGreedily (jobs : List (CoreM α)) : CoreM (BaseIO Unit × MLList CoreM α) := do
-  let (cancels, tasks) := (← jobs.mapM asTask).unzip
-  return (cancels.forM id, .squash fun _ => return MLList.ofTaskList tasks |>.liftM.mapM id)
+  let tasks := ← jobs.mapM asTask
+  return (tasks.forM IO.cancel, MLList.ofTaskListM tasks fun
+    | .ok (a, s) => set s *> pure a
+    | .error e => throw e)
 
 /--
 Variant of `CoreM.runGreedily` without a cancellation hook.
@@ -122,21 +121,22 @@ end Lean.Core.CoreM
 namespace Lean.Meta.MetaM
 
 /--
-Given a monadic value in `MetaM`, creates a task that runs it in the current state,
-returning
-* a cancellation hook and
-* a monadic value with the cached result (and subsequent state as it was after running).
+Use the current context and state to return an Core action that runs the computation.
 -/
-def asTask (t : MetaM α) : MetaM (BaseIO Unit × Task (MetaM α)) := do
-  let (cancel, task) ← (t.run (← read) (← get)).asTask
-  return (cancel, task.map (prio := .max)
-    fun c : CoreM (α × Meta.State) => do let (a, s) ← c; set s; pure a)
+def asCore (act : MetaM α) : MetaM (CoreM α) := (act.run' · ·) <$> read <*> get
 
 /--
-Given a monadic value in `MetaM`, creates a task that runs it in the current state,
-returning a monadic value with the cached result (and subsequent state as it was after running).
+Use the current context and state to return an EIO action that runs the computation.
 -/
-def asTask' (t : MetaM α) : MetaM (Task (MetaM α)) := (·.2) <$> asTask t
+def asEIO (m : MetaM α) : MetaM (EIO Exception α) := m.asCore >>= (·.asEIO)
+
+/--
+Given a Meta computation create a task that runs it and returns the result.
+-/
+def asTask (m : MetaM α) : MetaM (Task (Except Exception (α × Meta.SavedState))) := do
+  let act := Prod.mk <$> m <*> saveState
+  act.asEIO >>= (·.asTask)
+
 
 /--
 Given a list of monadic values in `MetaM`, runs them all as tasks,
@@ -147,8 +147,8 @@ and returns
 See the doc-string for `IO.runGreedily` for details about the cancellation hook behaviour.
 -/
 def runGreedily (jobs : List (MetaM α)) : MetaM (BaseIO Unit × MLList MetaM α) := do
-  let (cancels, tasks) := (← jobs.mapM asTask).unzip
-  return (cancels.forM id, .squash fun _ => return MLList.ofTaskList tasks |>.liftM.mapM id)
+  let tasks ← jobs.mapM asTask
+  return (tasks.forM IO.cancel, MLList.ofTaskListM tasks resumeSavedState)
 
 /--
 Variant of `MetaM.runGreedily` without a cancellation hook.
@@ -162,21 +162,21 @@ end Lean.Meta.MetaM
 namespace Lean.Elab.Term.TermElabM
 
 /--
-Given a monadic value in `TermElabM`, creates a task that runs it in the current state,
-returning
-* a cancellation hook and
-* a monadic value with the cached result (and subsequent state as it was after running).
+Use the current context and state to return an @MetaM@ action that runs the computation.
 -/
-def asTask (t : TermElabM α) : TermElabM (BaseIO Unit × Task (TermElabM α)) := do
-  let (cancel, task) ← (t.run (← read) (← get)).asTask
-  return (cancel, task.map (prio := .max)
-    fun c : MetaM (α × Term.State) => do let (a, s) ← c; set s; pure a)
+def asMeta (act : TermElabM α) : TermElabM (MetaM α) := (act.run' · ·) <$> read <*> get
 
 /--
-Given a monadic value in `TermElabM`, creates a task that runs it in the current state,
-returning a monadic value with the cached result (and subsequent state as it was after running).
+Use the current context and state to return an EIO action that runs the computation.
 -/
-def asTask' (t : TermElabM α) : TermElabM (Task (TermElabM α)) := (·.2) <$> asTask t
+def asEIO (act : TermElabM α) : TermElabM (EIO Exception α) := act.asMeta >>= (·.asEIO)
+
+/--
+Given a Meta computation create a task that runs it and returns the result.
+-/
+def asTask (m : TermElabM α) : TermElabM (Task (Except Exception (α × Term.SavedState))) := do
+  let act := Prod.mk <$> m <*> saveState
+  act.asEIO >>= (·.asTask)
 
 /--
 Given a list of monadic values in `TermElabM`, runs them all as tasks,
@@ -187,8 +187,8 @@ and returns
 See the doc-string for `IO.runGreedily` for details about the cancellation hook behaviour.
 -/
 def runGreedily (jobs : List (TermElabM α)) : TermElabM (BaseIO Unit × MLList TermElabM α) := do
-  let (cancels, tasks) := (← jobs.mapM asTask).unzip
-  return (cancels.forM id, .squash fun _ => return MLList.ofTaskList tasks |>.liftM.mapM id)
+  let tasks ← jobs.mapM asTask
+  return (tasks.forM IO.cancel, MLList.ofTaskListM tasks resumeSavedState)
 
 /--
 Variant of `TermElabM.runGreedily` without a cancellation hook.
@@ -201,21 +201,25 @@ end Lean.Elab.Term.TermElabM
 namespace Lean.Elab.Tactic.TacticM
 
 /--
+Use the current context and state to return an @MetaM@ action that runs the computation.
+-/
+def asTermElab (act : TacticM α) : TacticM (TermElabM α) := do
+  pure <| (act.run (←read)).run' (←get)
+
+/--
+Use the current context and state to return an EIO action that runs the computation.
+-/
+def asEIO (act : TacticM α) : TacticM (EIO Exception α) := act.asTermElab >>= (·.asEIO)
+
+/--
 Given a monadic value in `TacticM`, creates a task that runs it in the current state,
 returning
 * a cancellation hook and
 * a monadic value with the cached result (and subsequent state as it was after running).
 -/
-def asTask (t : TacticM α) : TacticM (BaseIO Unit × Task (TacticM α)) := do
-  let (cancel, task) ← (t (← read) |>.run (← get)).asTask
-  return (cancel, task.map (prio := .max)
-    fun c : TermElabM (α × Tactic.State) => do let (a, s) ← c; set s; pure a)
-
-/--
-Given a monadic value in `TacticM`, creates a task that runs it in the current state,
-returning a monadic value with the cached result (and subsequent state as it was after running).
--/
-def asTask' (t : TacticM α) : TacticM (Task (TacticM α)) := (·.2) <$> asTask t
+def asTask (m : TacticM α) : TacticM (Task (Except Exception (α × Tactic.SavedState))) := do
+  let act := Prod.mk <$> m <*> saveState
+  act.asEIO >>= (·.asTask)
 
 /--
 Given a list of monadic values in `TacticM`, runs them all as tasks,
@@ -226,13 +230,13 @@ and returns
 See the doc-string for `IO.runGreedily` for details about the cancellation hook behaviour.
 -/
 def runGreedily (jobs : List (TacticM α)) : TacticM (BaseIO Unit × MLList TacticM α) := do
-  let (cancels, tasks) := (← jobs.mapM asTask).unzip
-  return (cancels.forM id, .squash fun _ => return MLList.ofTaskList tasks |>.liftM.mapM id)
+  let tasks ← jobs.mapM asTask
+  return (tasks.forM IO.cancel, MLList.ofTaskListM tasks resumeSavedState)
 
 /--
 Variant of `TacticM.runGreedily` without a cancellation hook.
 -/
 def runGreedily' (jobs : List (TacticM α)) : MLList TacticM α :=
-  .squash fun _ => (·.2) <$> runGreedily jobs
+  .squash fun _ => Prod.snd <$> runGreedily jobs
 
 end Lean.Elab.Tactic.TacticM
