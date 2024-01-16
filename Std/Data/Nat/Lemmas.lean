@@ -151,7 +151,6 @@ instance : Std.IsCommutative (α := Nat) (· * ·) where
 instance : Std.IsCommId (α := Nat) (· * ·) 1 where
   right_id := Nat.mul_one
 
-
 /-! ### le/lt -/
 
 theorem ne_of_gt {a b : Nat} (h : b < a) : a ≠ b := (ne_of_lt h).symm
