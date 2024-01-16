@@ -47,7 +47,7 @@ through class inference.
 This intentionally does not have associated lemmas.  For lemmas, see @IsLeftId@,
 @IsRightId@ and @IsId .
  -/
-class HasId {α : Type u} (op : α → α → α) (o : outParam α) : Prop where
+class HasId {α : Type u} (op : α → α → α) (o : outParam α) : Prop
 
 /-- A binary operation with a left identity. -/
 class IsLeftId (op : α → α → α) (o : outParam α) extends HasId op o : Prop where
