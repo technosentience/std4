@@ -181,8 +181,7 @@ theorem mem_iff_append {a : α} {l : List α} : a ∈ l ↔ ∃ s t : List α, l
 
 /-! ### map -/
 
-@[simp]
-theorem map_eq_map (f : α → β) (l : List α) : f <$> l = map f l := rfl
+@[simp] theorem map_eq_map (f : α → β) (l : List α) : f <$> l = map f l := rfl
 
 theorem map_singleton (f : α → β) (a : α) : map f [a] = [f a] := rfl
 
