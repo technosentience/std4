@@ -270,12 +270,14 @@ instance {α : Type _} : Std.IsId (α := List α) List.append nil where
 /--
 Applies a fold operation to join elements togethrr.
 -/
+@[nolint unusedArguments] -- HasId needed for inference only.
 def fold {α : Type _} (op : α → α → α) {o : α} [Std.HasId op o] (l:List α) : α :=
   l.foldl (init := o) op
 
 /--
 `foldMap op f l` is equivalent to `fold op (map f l)`.
 -/
+@[nolint unusedArguments] -- HasId needed for inference only.
 def foldMap {α : Type _} {β : Type _} (op : β → β → β) {o : β} [Std.HasId op o] (f : α → β)
     (l:List α) : β :=
   l.foldl (init := o) (fun b a => op b (f a))
