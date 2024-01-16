@@ -3,11 +3,9 @@ Copyright (c) 2016 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura, Jeremy Avigad, Mario Carneiro
 -/
-import Std.Logic
-import Std.Tactic.Basic
-import Std.Tactic.Alias
-import Std.Data.Nat.Init.Lemmas
+import Std.Classes.Algebra
 import Std.Data.Nat.Basic
+import Std.Data.Nat.Init.Lemmas
 import Std.Data.Ord
 
 namespace Nat
@@ -132,6 +130,27 @@ theorem recDiagOn_succ_succ {motive : Nat → Nat → Sort _} (zero_zero : motiv
     (zero_succ : ∀ n, motive 0 (n+1)) (succ_zero : ∀ m, motive (m+1) 0)
     (succ_succ : ∀ m n, motive (m+1) (n+1)) (m n) :
     Nat.casesDiagOn (m+1) (n+1) zero_zero zero_succ succ_zero succ_succ = succ_succ m n := rfl
+
+/-! ### Associative and commutative instance. -/
+
+instance : Std.IsAssociative (α := Nat) (· + ·) where
+  assoc := Nat.add_assoc
+
+instance : Std.IsCommutative (α := Nat) (· + ·) where
+  comm := Nat.add_comm
+
+instance : Std.IsCommId (α := Nat) (· + ·) 0 where
+  right_id := Nat.add_zero
+
+instance : Std.IsAssociative (α := Nat) (· * ·) where
+  assoc := Nat.mul_assoc
+
+instance : Std.IsCommutative (α := Nat) (· * ·) where
+  comm := Nat.mul_comm
+
+instance : Std.IsCommId (α := Nat) (· * ·) 1 where
+  right_id := Nat.mul_one
+
 
 /-! ### le/lt -/
 

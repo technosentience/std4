@@ -3,6 +3,7 @@ Copyright (c) 2016 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Leonardo de Moura
 -/
+import Std.Classes.Algebra
 import Std.Classes.SetNotation
 import Std.Tactic.NoMatch
 import Std.Data.Option.Init.Lemmas
@@ -254,6 +255,42 @@ where
     | [] => by simp [intercalateTR.go]
     | _::_ => by simp [intercalateTR.go, go]
     simp [intersperse, go]
+
+/-! ## Algebraic instances -/
+
+instance {α : Type _} : Std.IsAssociative (α := List α) List.append where
+  assoc := append_assoc
+
+instance {α : Type _} : Std.IsId (α := List α) List.append nil where
+  left_id := nil_append
+  right_id := append_nil
+
+/-! ## Generic fold and sum operations. -/
+
+/--
+Applies a fold operation to join elements togethrr.
+-/
+def fold {α : Type _} (op : α → α → α) {o : α} [Std.HasId op o] (l:List α) : α :=
+  l.foldl (init := o) op
+
+/--
+`foldMap op f l` is equivalent to `fold op (map f l)`.
+-/
+def foldMap {α : Type _} {β : Type _} (op : β → β → β) {o : β} [Std.HasId op o] (f : α → β)
+    (l:List α) : β :=
+  l.foldl (init := o) (fun b a => op b (f a))
+
+/--
+Returns sum of elements in list addinging init in.
+-/
+def sum [Add α] [OfNat α 0] (l:List α) : α :=
+  l.foldl (init := 0) (· + ·)
+
+/--
+sumMap f l returns the sum of `sum (map f l)` without creating an intermediate list.
+-/
+def sumMap {α : Type u} {β : Type v} [Add β] [OfNat β 0] (f : α → β) (l:List α) : β :=
+  l.foldl (init := 0) (· + f ·)
 
 /-! ## New definitions -/
 

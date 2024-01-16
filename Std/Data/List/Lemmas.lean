@@ -181,6 +181,9 @@ theorem mem_iff_append {a : α} {l : List α} : a ∈ l ↔ ∃ s t : List α, l
 
 /-! ### map -/
 
+@[simp]
+theorem map_eq_map (f : α → β) (l : List α) : f <$> l = map f l := rfl
+
 theorem map_singleton (f : α → β) (a : α) : map f [a] = [f a] := rfl
 
 @[simp] theorem mem_map {f : α → β} : ∀ {l : List α}, b ∈ l.map f ↔ ∃ a, a ∈ l ∧ f a = b
@@ -362,7 +365,84 @@ theorem map_snd_zip :
     show _ :: map Prod.snd (zip as bs) = _ :: bs
     rw [map_snd_zip as bs h]
 
+/-! ### folds and sum -/
+
+-- Allow moving an associative operation outside the left-fold.
+theorem foldl_assoc (op : α → α → α) [h : Std.IsAssociative op] (a b : α) (l : List α) :
+    foldl op (op a b) l = op a (foldl op b l) := by
+  induction l generalizing a b with
+  | nil => simp
+  | cons c l ind => simp [ind, h.assoc]
+
+theorem foldr_assoc (op : α → α → α) [h : Std.IsAssociative op] (a b : α) (l : List α) :
+    foldr op (op a b) l = op (foldr op a l) b := by
+  induction l generalizing a b with
+  | nil => simp
+  | cons c l ind => simp [ind, h.assoc]
+
+@[simp]
+theorem fold_nil (op : α → α → α) [Std.HasId op o] : fold op (@nil α) = o := rfl
+
+@[simp]
+theorem fold_cons (op : α → α → α) [ha : Std.IsAssociative op]  [hl : Std.IsId op o]
+    (a : α) (l : List α) : fold op (a :: l) = op a (fold op l) := by
+  unfold fold
+  simp [foldl_cons]
+  conv => lhs; rw [hl.left_id, ←hl.right_id a]
+  simp [foldl_assoc, hl.left_id]
+
+@[simp]
+theorem fold_append (op : α → α → α) [ha : Std.IsAssociative op]  [hl : Std.IsId op o]
+    (k l : List α) : fold op (k ++ l) = op (fold op k) (fold op l) := by
+  induction k with
+  | nil => simp [hl.left_id]
+  | cons a k ind => simp [ind, ha.assoc]
+
+@[simp]
+theorem foldMap_is_fold_map (op : β → β → β) [Std.HasId op o] (f : α → β) (l : List α) :
+    foldMap op f l = fold op (map f l) := by
+  unfold foldMap fold
+  generalize (o : β) = init
+  induction l generalizing init with
+  | nil => rfl
+  | cons a l ind => simp [foldl, ind]
+
+@[simp]
+theorem sumMap_is_sum_map [Add β] [OfNat β 0] (f : α → β) (l : List α) :
+    sumMap f l = sum (map f l) := by
+  unfold sumMap sum
+  generalize (0 : β) = init
+  induction l generalizing init with
+  | nil => rfl
+  | cons a l ind => simp [foldl, ind]
+
+@[simp]
+theorem sum_nil [Add α] [OfNat α 0] : sum (@nil α)  = 0 := rfl
+
+@[simp]
+theorem sum_cons [Add α] [h : OfNat α 0]
+    [ha : Std.IsAssociative (α := α) (· + ·)]  [hl : Std.IsId (α := α) (· + ·) 0]
+    (a : α) (l : List α) : sum (a :: l) = a + sum l := by
+  unfold sum
+  simp [foldl_cons]
+  conv => lhs; rw [hl.left_id, ←hl.right_id a]
+  simp [foldl_assoc, hl.left_id]
+
+@[simp]
+theorem sum_append [Add α] [OfNat α 0]
+    [ha : Std.IsAssociative (α := α) (· + ·)]  [hl : Std.IsId (α := α) (· + ·) 0]
+    (k l : List α) : sum (k ++ l) = sum k + sum l := by
+  induction k with
+  | nil => simp [hl.left_id]
+  | cons a k ind => simp [ind, ha.assoc]
+
 /-! ### join -/
+
+@[simp]
+theorem length_join (l : List (List α)) : length (join l) = sum (map length l) := by
+  induction l with
+  | nil => simp
+  | cons a l ind => simp [ind]
 
 theorem mem_join : ∀ {L : List (List α)}, a ∈ L.join ↔ ∃ l, l ∈ L ∧ a ∈ l
   | [] => by simp
